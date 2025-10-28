@@ -1,0 +1,57 @@
+services:
+  # Database Service
+  db:
+    image: mysql:8.0
+    container_name: cloudeats-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password
+      MYSQL_DATABASE: cloudeats_db
+      MYSQL_USER: cloudeats_user
+      MYSQL_PASSWORD: cloudeats_password
+    ports:
+      - "3306:3306"
+    volumes:
+      - db_data:/var/lib/mysql
+    networks:
+      - cloudeats-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      timeout: 20s
+      retries: 10
+
+  # Backend API Service
+  api:
+    build: ./backend
+    container_name: cloudeats-api
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - cloudeats-network
+    environment:
+      - NODE_ENV=development
+
+  # Frontend Web Service
+  web:
+    build: ./frontend
+    container_name: cloudeats-web
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+    networks:
+      - cloudeats-network
+
+# Networks
+networks:
+  cloudeats-network:
+    driver: bridge
+
+# Volumes
+volumes:
+  db_data:
