@@ -1,16 +1,17 @@
 const express = require('express');
 const mysql = require('mysql2');
 const cors = require('cors');
-
 const app = express();
 const PORT = 3000;
+// Add bcrypt for password hashing
+const bcrypt = require('bcrypt');
+const SALT_ROUNDS = 10;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
 // Database connection
-// Note: 'db' is the service name from docker compose.yml
+// Note: 'db' is the service name from docker-compose.yml
 const db = mysql.createConnection({
   host: 'db',
   user: 'cloudeats_user',
@@ -30,47 +31,102 @@ db.connect((err) => {
   initializeDatabase();
 });
 
-//lab3_2 Step 1
-
-// Initialize database with menu items
-function initializeDatabase() {
-  const createTableQuery = `
-    CREATE TABLE IF NOT EXISTS menu_items (
+// Create users table
+function createUsersTable(callback) {
+  const createUserTableQuery = `
+    CREATE TABLE IF NOT EXISTS users (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      name VARCHAR(255) NOT NULL,
-      category VARCHAR(100) NOT NULL,
-      price DECIMAL(10, 2) NOT NULL,
-      description TEXT,
-      badge VARCHAR(50),
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      email VARCHAR(255) UNIQUE NOT NULL,
+      password_hash VARCHAR(255) NOT NULL,
+      full_name VARCHAR(255) NOT NULL,
+      phone VARCHAR(20),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_email (email)
     )
   `;
-  
-  db.query(createTableQuery, (err) => {
+
+  db.query(createUserTableQuery, (err) => {
     if (err) {
-      console.error('Error creating table:', err);
+      console.error('Error creating users table:', err);
       return;
     }
-    console.log('Menu items table ready');
-    
-    // Check if table is empty
-    db.query('SELECT COUNT(*) as count FROM menu_items', (err, results) => {
-      if (err) {
-        console.error('Error checking table:', err);
-        return;
-      }
-      
-      // If table is empty, insert sample data
-      if (results[0].count === 0) {
-        insertSampleData();
-      }
-    });
+    console.log('Users table ready');
+    if (callback) callback();
   });
-  
-  //lab3_2 step 1 create tables
-  
 }
 
+// Create orders table (for future use)
+function createOrdersTable(callback) {
+  const createOrderTableQuery = `
+    CREATE TABLE IF NOT EXISTS orders (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      total_amount DECIMAL(10, 2) NOT NULL,
+      status ENUM('pending', 'confirmed', 'preparing', 'delivered', 'cancelled') DEFAULT 'pending',
+      delivery_address TEXT,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX idx_user_id (user_id),
+      INDEX idx_status (status)
+    )
+  `;
+
+  db.query(createOrderTableQuery, (err) => {
+    if (err) {
+      console.error('Error creating orders table:', err);
+      return;
+    }
+    console.log('Orders table ready');
+    if (callback) callback();
+  });
+}
+
+// Update initializeDatabase function
+function initializeDatabase() {
+  // Create users table first (since orders depends on it)
+  createUsersTable(() => {
+    // Then create orders table
+    createOrdersTable(() => {
+      // Finally create menu_items table
+      const createTableQuery = `
+        CREATE TABLE IF NOT EXISTS menu_items (
+          id INT AUTO_INCREMENT PRIMARY KEY,
+          name VARCHAR(255) NOT NULL,
+          category VARCHAR(100) NOT NULL,
+          price DECIMAL(10, 2) NOT NULL,
+          description TEXT,
+          badge VARCHAR(50),
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `;
+
+      db.query(createTableQuery, (err) => {
+        if (err) {
+          console.error('Error creating table:', err);
+          return;
+        }
+        console.log('Menu items table ready');
+
+        // Check if table is empty
+        db.query('SELECT COUNT(*) as count FROM menu_items', (err, results) => {
+          if (err) {
+            console.error('Error checking table:', err);
+            return;
+          }
+
+          // If table is empty, insert sample data
+          if (results[0].count === 0) {
+            insertSampleData();
+          }
+        });
+      });
+    });
+  });
+}
+ 
 // Insert sample menu data
 function insertSampleData() {
   const sampleItems = [
@@ -96,6 +152,74 @@ function insertSampleData() {
     console.log('Sample menu items inserted');
   });
 }
+
+
+// ==========================================
+// USER MANAGEMENT ROUTES
+// ==========================================
+
+// User Registration
+app.post('/api/auth/register', async (req, res) => {
+  const { email, password, full_name, phone } = req.body;
+  
+  // Validation
+  if (!email || !password || !full_name) {
+    return res.status(400).json({ 
+      error: 'Email, password, and full name are required' 
+    });
+  }
+  
+  // Email validation
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(email)) {
+    return res.status(400).json({ error: 'Invalid email format' });
+  }
+  
+  // Password strength validation
+  if (password.length < 6) {
+    return res.status(400).json({ 
+      error: 'Password must be at least 6 characters long' 
+    });
+  }
+  
+  try {
+    // Check if user already exists
+    db.query('SELECT id FROM users WHERE email = ?', [email], async (err, results) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      if (results.length > 0) {
+        return res.status(409).json({ error: 'Email already registered' });
+      }
+      
+      // Hash password
+      const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
+      
+      // Insert new user
+      const insertQuery = 'INSERT INTO users (email, password_hash, full_name, phone) VALUES (?, ?, ?, ?)';
+      db.query(insertQuery, [email, password_hash, full_name, phone || null], (err, result) => {
+        if (err) {
+          console.error('Error creating user:', err);
+          return res.status(500).json({ error: 'Failed to create user' });
+        }
+        
+        res.status(201).json({
+          message: 'User registered successfully',
+          user: {
+            id: result.insertId,
+            email: email,
+            full_name: full_name
+          }
+        });
+      });
+    });
+  } catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({ error: 'Registration failed' });
+  }
+});
 
 // API Routes
 
@@ -142,8 +266,88 @@ app.get('/api/menu/:id', (req, res) => {
     res.json(results[0]);
   });
 });
+// User Login
+app.post('/api/auth/login', (req, res) => {
+  const { email, password } = req.body;
+  
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Email and password are required' });
+  }
+  
+  // Find user by email
+  db.query('SELECT * FROM users WHERE email = ?', [email], async (err, results) => {
+    if (err) {
+      console.error('Database error:', err);
+      return res.status(500).json({ error: 'Database error' });
+    }
+    
+    if (results.length === 0) {
+      return res.status(401).json({ error: 'Invalid email or password' });
+    }
+    
+    const user = results[0];
+    
+    try {
+      // Compare password with hash
+      const isPasswordValid = await bcrypt.compare(password, user.password_hash);
+      
+      if (!isPasswordValid) {
+        return res.status(401).json({ error: 'Invalid email or password' });
+      }
+      
+      // Login successful
+      res.json({
+        message: 'Login successful',
+        user: {
+          id: user.id,
+          email: user.email,
+          full_name: user.full_name,
+          phone: user.phone
+        }
+      });
+    } catch (error) {
+      console.error('Login error:', error);
+      res.status(500).json({ error: 'Login failed' });
+    }
+  });
+});
 
-//lab3_2 step 2 here
+// Get User Profile
+app.get('/api/users/:id', (req, res) => {
+  const userId = req.params.id;
+  
+  db.query('SELECT id, email, full_name, phone, created_at FROM users WHERE id = ?', 
+    [userId], (err, results) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      if (results.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      res.json(results[0]);
+    });
+});
+
+// Get User's Order History
+app.get('/api/users/:id/orders', (req, res) => {
+  const userId = req.params.id;
+  
+  db.query(
+    'SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC', 
+    [userId], 
+    (err, results) => {
+      if (err) {
+        console.error('Database error:', err);
+        return res.status(500).json({ error: 'Database error' });
+      }
+      
+      res.json(results);
+    }
+  );
+});
 
 // Start server
 app.listen(PORT, '0.0.0.0', () => {
