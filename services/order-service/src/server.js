@@ -326,6 +326,126 @@ app.put('/api/orders/:orderId/status', async (req, res) => {
 });
 
 // ============================================
+// SERVICE-TO-SERVICE COMMUNICATION
+// ============================================
+
+// Helper function to call other services
+async function callService(serviceName, path) {
+  const serviceUrls = {
+    'menu': process.env.MENU_SERVICE_URL || 'http://menu-service:3002',
+    'user': process.env.USER_SERVICE_URL || 'http://user-service:3001'
+  };
+  
+  const serviceUrl = serviceUrls[serviceName];
+  if (!serviceUrl) {
+    throw new Error(`Unknown service: ${serviceName}`);
+  }
+  
+  const url = `${serviceUrl}${path}`;
+  console.log(`[SERVICE-CALL] Calling ${serviceName}: ${url}`);
+  
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(`Service ${serviceName} returned ${response.status}`);
+    }
+    return await response.json();
+  } catch (error) {
+    console.error(`[SERVICE-CALL] Error calling ${serviceName}:`, error.message);
+    throw error;
+  }
+}
+
+// ============================================
+// ENHANCED ORDER PLACEMENT WITH VALIDATION
+// ============================================
+
+// Update the existing POST /api/orders endpoint
+app.post('/api/orders', async (req, res) => {
+  const { userId, deliveryAddress, notes, paymentMethod } = req.body;
+  
+  if (!userId || !deliveryAddress) {
+    return res.status(400).json({ error: 'User ID and delivery address are required' });
+  }
+  
+  try {
+    // Get cart from Redis
+    const cartKey = getCartKey(userId);
+    const cartData = await redisClient.get(cartKey);
+    
+    if (!cartData) {
+      return res.status(400).json({ error: 'Cart is empty' });
+    }
+    
+    const cart = JSON.parse(cartData);
+    
+    if (cart.items.length === 0) {
+      return res.status(400).json({ error: 'Cart is empty' });
+    }
+    
+    // ===== NEW: VERIFY PRICES WITH MENU SERVICE =====
+    console.log('[ORDER] Verifying prices with menu service...');
+    let priceVerificationFailed = false;
+    
+    for (const item of cart.items) {
+      try {
+        // Call menu service to get current price
+        const menuItem = await callService('menu', `/api/menu/${item.itemId}`);
+        
+        // Check if price changed
+        if (menuItem.price !== item.price) {
+          console.log(`[ORDER] ⚠️  Price mismatch for item ${item.itemId}: cart=${item.price}, menu=${menuItem.price}`);
+          priceVerificationFailed = true;
+          
+          // Update cart with current price
+          item.price = menuItem.price;
+        }
+      } catch (error) {
+        console.error(`[ORDER] Could not verify price for item ${item.itemId}`);
+        // Continue anyway - don't block order
+      }
+    }
+    
+    // Recalculate total if prices changed
+    if (priceVerificationFailed) {
+      cart.total = cart.items.reduce((sum, item) => sum + (item.price * item.quantity), 0);
+      console.log(`[ORDER] Recalculated total: ${cart.total}`);
+    }
+    // ===== END PRICE VERIFICATION =====
+    
+    // Create order document
+    const order = {
+      userId: parseInt(userId),
+      items: cart.items,
+      totalAmount: cart.total,
+      deliveryAddress,
+      notes: notes || '',
+      paymentMethod: paymentMethod || 'cash',
+      status: 'pending',
+      priceVerified: !priceVerificationFailed,
+      createdAt: new Date(),
+      updatedAt: new Date()
+    };
+    
+    // Insert into MongoDB
+    const result = await ordersCollection.insertOne(order);
+    
+    // Clear cart after successful order
+    await redisClient.del(cartKey);
+    
+    res.status(201).json({
+      message: 'Order placed successfully',
+      orderId: result.insertedId,
+      order: { ...order, _id: result.insertedId },
+      priceVerified: !priceVerificationFailed
+    });
+  } catch (error) {
+    console.error('Error placing order:', error);
+    res.status(500).json({ error: 'Failed to place order' });
+  }
+});
+
+// ============================================
 // START SERVER
 // ============================================
 app.listen(PORT, '0.0.0.0', () => {

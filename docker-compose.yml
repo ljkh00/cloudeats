@@ -123,6 +123,31 @@ services:
       - "service.description=Shopping cart and orders"
 
   # ============================================
+  # API GATEWAY (NEW!)
+  # ============================================
+  
+  api-gateway:
+    build: ./services/api-gateway
+    container_name: api-gateway
+    restart: unless-stopped
+    ports:
+      - "8000:8000"  # Main entry point!
+    environment:
+      - USER_SERVICE_URL=http://user-service:3001
+      - MENU_SERVICE_URL=http://menu-service:3002
+      - ORDER_SERVICE_URL=http://order-service:3003
+      - PORT=8000
+    depends_on:
+      - user-service
+      - menu-service
+      - order-service
+    networks:
+      - cloudeats-network
+    labels:
+      - "service.name=api-gateway"
+      - "service.description=Main entry point for all API requests"
+
+  # ============================================
   # FRONTEND
   # ============================================
   
@@ -133,9 +158,7 @@ services:
     ports:
       - "8080:80"
     depends_on:
-      - user-service
-      - menu-service
-      - order-service
+      - api-gateway
     networks:
       - cloudeats-network
 
