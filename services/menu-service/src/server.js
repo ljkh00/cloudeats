@@ -120,6 +120,37 @@ function validateRating(rating) {
 
 // ========== END VALIDATION FUNCTIONS ==========
 
+// ========== RATING ROUTES ==========
+
+/**
+ * POST /api/ratings - Add new restaurant rating
+ * Body: { userId, restaurantName, rating, comment }
+ */
+app.post('/api/ratings', (req, res) => {
+  const { userId, restaurantName, rating, comment } = req.body;
+  
+  // Validate rating using our function
+  const validation = validateRating(rating);
+  if (!validation.valid) {
+    return res.status(400).json({ error: validation.error });
+  }
+  
+  // TODO: Save to database (Lab 6.1)
+  // For now, just return success
+  res.json({
+    message: 'Rating added successfully',
+    data: {
+      userId,
+      restaurantName,
+      rating,
+      comment,
+      timestamp: new Date()
+    }
+  });
+});
+
+// ========== END RATING ROUTES ==========
+
 // ============================================
 // HEALTH CHECK
 // ============================================
